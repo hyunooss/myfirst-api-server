@@ -9,23 +9,23 @@ metadata:
     prometheus.io/port: '8080'
     prometheus.io/path: '/actuator/prometheus'
     update: d7955404
-  name: sk0026-myfirst-api-server
+  name: sk026-myfirst-api-server
   namespace: class-1
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: sk0026-myfirst-api-server
+      app: sk026-myfirst-api-server
   template:
     metadata:
       labels:
-        app: sk0026-myfirst-api-server
+        app: sk026-myfirst-api-server
     spec:
       # SIGTERM 전달 후 강제 종료(SIGKILL)까지 대기하는 최대 시간
       terminationGracePeriodSeconds: 20
       containers:
         - name: myfirst-api-server
-          image: skala-registry.skala-us.com/class-1/sk0026-webserver:1.0
+          image: skala-registry.skala-us.com/class-1/sk026-webserver:1.0
           imagePullPolicy: Always
           ports:
             - containerPort: 8080

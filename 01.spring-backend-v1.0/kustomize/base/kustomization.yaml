@@ -6,11 +6,11 @@ namespace: class-1
 labels:
   - pairs:
       skala.io/component: skala-devops
-      skala.io/managed-by: class-1-sk0026
+      skala.io/managed-by: class-1-sk026
     includeSelectors: false
 
 commonAnnotations:
-  skala.io/owner: sk0026
+  skala.io/owner: sk026
   skala.io/registry: skala-registry.skala-us.com
 
 resources:
