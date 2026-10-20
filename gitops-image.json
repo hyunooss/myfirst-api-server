@@ -1,10 +1,10 @@
 {
   "student": "sk026",
   "namespace": "class-1",
-  "image": "skala-registry.skala-us.com/class-1/sk026-webserver:p239-k8s-buildkit-1-c24991f",
-  "digest": "sha256:1bf2c01e8abc80e078abadf10b2dbe2cb77d4dd3d2efe1f47c2c51a4c8334e8a",
-  "source_revision": "c24991ff34707060718f1e9d8249ee56bc49861b",
+  "image": "skala-registry.skala-us.com/class-1/sk026-webserver:p239-k8s-buildkit-2-bfb8b6d",
+  "digest": "sha256:40cdc773fa7b5f59763099b0b85e7929d8c2d10684cd78822aa75eb803ad94dd",
+  "source_revision": "bfb8b6d167d320e89a1b71f3ff0ca54e3610e32e",
   "tool": "buildkit",
   "job": "sk026-controller-buildkit-ci",
-  "build_number": "1"
+  "build_number": "2"
 }

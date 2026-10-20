@@ -82,7 +82,7 @@ spec:
           value: prod
         - name: JAVA_OPTS
           value: -Xms64m -Xmx256m
-        image: skala-registry.skala-us.com/class-1/sk026-webserver:p239-k8s-buildkit-1-c24991f
+        image: skala-registry.skala-us.com/class-1/sk026-webserver:p239-k8s-buildkit-2-bfb8b6d
         imagePullPolicy: Always
         livenessProbe:
           httpGet:
