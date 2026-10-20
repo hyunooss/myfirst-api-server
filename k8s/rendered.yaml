@@ -82,7 +82,7 @@ spec:
           value: prod
         - name: JAVA_OPTS
           value: -Xms64m -Xmx256m
-        image: skala-registry.skala-us.com/class-1/sk026-webserver:p175-docker-6-c24991f
+        image: skala-registry.skala-us.com/class-1/sk026-webserver:p175-docker-7-bfb8b6d
         imagePullPolicy: Always
         livenessProbe:
           httpGet:
