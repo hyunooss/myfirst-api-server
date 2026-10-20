@@ -1,0 +1,256 @@
+pipeline {
+  agent any
+  options {
+    disableConcurrentBuilds()
+    timestamps()
+    skipDefaultCheckout(true)
+    timeout(time: 35, unit: 'MINUTES')
+    buildDiscarder(logRotator(numToKeepStr: '10'))
+  }
+  environment {
+    GIT_URL = 'https://github.com/hyunooss/myfirst-api-server.git'
+    GIT_BRANCH = 'main'
+    GIT_ID = 'sk026-github-id'
+    APP_DIR = '01.spring-backend-v1.0'
+    IMAGE_NAME = 'sk026-webserver'
+    IMAGE_TAG = 'p238-k8s-buildah'
+    IMAGE_REGISTRY_URL = 'skala-registry.skala-us.com'
+    IMAGE_REGISTRY_PROJECT = 'class-1'
+    DOCKER_CREDENTIAL_ID = 'sk026-image-registry-id'
+    K8S_NAMESPACE = 'class-1'
+    DEPLOYMENT_NAME = 'sk026-controller-api'
+  }
+  stages {
+    stage('Clone Repository') {
+      steps {
+        git branch: env.GIT_BRANCH, url: env.GIT_URL, credentialsId: env.GIT_ID
+        script {
+          env.SOURCE_REV = sh(script: 'git rev-parse HEAD', returnStdout: true).trim()
+          env.FINAL_IMAGE_TAG = "${env.IMAGE_TAG}-${env.BUILD_NUMBER}"
+        }
+        sh '''#!/bin/bash
+set -euo pipefail
+mkdir -p evidence
+printf '%s\n' "$SOURCE_REV" > evidence/source-revision.txt
+printf '%s/%s/%s:%s\n' "$IMAGE_REGISTRY_URL" "$IMAGE_REGISTRY_PROJECT" "$IMAGE_NAME" "$FINAL_IMAGE_TAG" > evidence/image-ref.txt
+'''
+      }
+    }
+    stage('Build with Maven') {
+      steps {
+        writeFile file: 'maven-settings.xml', text: '<settings><mirrors><mirror><id>google-central</id><url>https://maven-central.storage-download.googleapis.com/maven2</url><mirrorOf>central</mirrorOf></mirror></mirrors></settings>'
+        dir(env.APP_DIR) { sh 'mvn -B -ntp -s ../maven-settings.xml clean package -DskipTests' }
+        sh '''#!/bin/bash
+set -euo pipefail
+mkdir -p image-context/target
+cp "$APP_DIR/target/myapp-0.0.1-SNAPSHOT.jar" image-context/target/
+sed 's|^FROM eclipse-temurin:|FROM docker.io/library/eclipse-temurin:|' "$APP_DIR/Dockerfile" > image-context/Dockerfile
+sha256sum image-context/target/*.jar > evidence/jar-sha256.txt
+'''
+      }
+    }
+    stage('Image Build & Push (Buildah)') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: env.DOCKER_CREDENTIAL_ID,
+          usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
+          sh '''#!/bin/bash
+set +x
+set -euo pipefail
+IMAGE_REF="${IMAGE_REGISTRY_URL}/${IMAGE_REGISTRY_PROJECT}/${IMAGE_NAME}:${FINAL_IMAGE_TAG}"
+REG_AUTH_DIR="$(mktemp -d /tmp/sk026-registry.XXXXXX)"
+BUILDAH_STORAGE_DIR="$(mktemp -d /tmp/sk026-buildah.XXXXXX)"
+trap 'rm -rf -- "$REG_AUTH_DIR" "$BUILDAH_STORAGE_DIR"' EXIT
+printf '%s' "$REG_PASS" | buildah login --authfile "$REG_AUTH_DIR/config.json" \
+  --username "$REG_USER" --password-stdin "$IMAGE_REGISTRY_URL"
+buildah --root "$BUILDAH_STORAGE_DIR/root" --runroot "$BUILDAH_STORAGE_DIR/run" --storage-driver=vfs bud \
+  --isolation chroot --platform linux/amd64 --authfile "$REG_AUTH_DIR/config.json" \
+  --label "org.opencontainers.image.source=$GIT_URL" --label "org.opencontainers.image.revision=$SOURCE_REV" \
+  --label skala.student=sk026 --iidfile "$WORKSPACE/evidence/image-id.txt" \
+  --tag "$IMAGE_REF" "$WORKSPACE/image-context"
+buildah --root "$BUILDAH_STORAGE_DIR/root" --runroot "$BUILDAH_STORAGE_DIR/run" --storage-driver=vfs push \
+  --authfile "$REG_AUTH_DIR/config.json" --digestfile "$WORKSPACE/evidence/image-digest.txt" \
+  "$IMAGE_REF" "docker://$IMAGE_REF"
+'''
+        }
+      }
+    }
+    stage('Deploy to Kubernetes with ServiceAccount') {
+      steps {
+        writeFile file: 'evidence/runtime.json', text: '''{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "metadata": {
+        "name": "sk026-controller-config",
+        "namespace": "class-1",
+        "labels": {
+          "app": "sk026-controller-api",
+          "owner": "sk026",
+          "lab": "sk026-pages-231-290"
+        }
+      },
+      "data": {
+        "application-prod.yaml": "server:\\n  port: 8080\\n\\ndeveloper:\\n  owner:\\n    name: sk026\\n    role: k8s-controller\\n    level: high\\n  team:\\n    position: \\"5th floor\\"\\n    detail: class-1\\n\\n# H2 설정\\nspring:\\n  datasource:\\n    url: jdbc:h2:mem:testdb\\n    driver-class-name: org.h2.Driver\\n    username: sa\\n    password:\\n  h2:\\n    console:\\n      enabled: true\\n      path: /h2-console\\n  jpa:\\n    hibernate:\\n      ddl-auto: create-drop\\n    show-sql: true\\n    defer-datasource-initialization: true\\n  sql:\\n    init:\\n      mode: always\\n"
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "sk026-controller-api",
+        "namespace": "class-1",
+        "labels": {
+          "app": "sk026-controller-api",
+          "owner": "sk026",
+          "lab": "sk026-pages-231-290"
+        }
+      },
+      "spec": {
+        "replicas": 1,
+        "selector": {
+          "matchLabels": {
+            "app": "sk026-controller-api"
+          }
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "sk026-controller-api",
+              "owner": "sk026",
+              "lab": "sk026-pages-231-290"
+            }
+          },
+          "spec": {
+            "imagePullSecrets": [
+              {
+                "name": "sk026-helm-registry"
+              }
+            ],
+            "containers": [
+              {
+                "name": "api",
+                "image": "__IMAGE_REF__",
+                "ports": [
+                  {
+                    "name": "http",
+                    "containerPort": 8080
+                  }
+                ],
+                "env": [
+                  {
+                    "name": "SPRING_PROFILES_ACTIVE",
+                    "value": "prod"
+                  },
+                  {
+                    "name": "SPRING_CONFIG_ADDITIONAL_LOCATION",
+                    "value": "file:/config/"
+                  },
+                  {
+                    "name": "JAVA_OPTS",
+                    "value": "-Xms64m -Xmx256m"
+                  }
+                ],
+                "resources": {
+                  "requests": {
+                    "cpu": "100m",
+                    "memory": "256Mi"
+                  },
+                  "limits": {
+                    "cpu": "1",
+                    "memory": "768Mi"
+                  }
+                },
+                "volumeMounts": [
+                  {
+                    "name": "config",
+                    "mountPath": "/config",
+                    "readOnly": true
+                  }
+                ],
+                "startupProbe": {
+                  "httpGet": {
+                    "path": "/actuator/health/readiness",
+                    "port": 8080
+                  },
+                  "periodSeconds": 5,
+                  "failureThreshold": 36
+                },
+                "readinessProbe": {
+                  "httpGet": {
+                    "path": "/actuator/health/readiness",
+                    "port": 8080
+                  },
+                  "periodSeconds": 5
+                },
+                "livenessProbe": {
+                  "httpGet": {
+                    "path": "/actuator/health/liveness",
+                    "port": 8080
+                  },
+                  "periodSeconds": 10
+                }
+              }
+            ],
+            "volumes": [
+              {
+                "name": "config",
+                "configMap": {
+                  "name": "sk026-controller-config"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "sk026-controller-api",
+        "namespace": "class-1",
+        "labels": {
+          "app": "sk026-controller-api",
+          "owner": "sk026",
+          "lab": "sk026-pages-231-290"
+        }
+      },
+      "spec": {
+        "selector": {
+          "app": "sk026-controller-api"
+        },
+        "ports": [
+          {
+            "name": "http",
+            "port": 8080,
+            "targetPort": "http"
+          }
+        ]
+      }
+    }
+  ]
+}'''
+        sh '''#!/bin/bash
+set -euo pipefail
+python3 -c 'import os,pathlib;p=pathlib.Path("evidence/runtime.json");p.write_text(p.read_text().replace("__IMAGE_REF__",os.environ["IMAGE_REGISTRY_URL"]+"/"+os.environ["IMAGE_REGISTRY_PROJECT"]+"/"+os.environ["IMAGE_NAME"]+":"+os.environ["FINAL_IMAGE_TAG"]))'
+test -z "${KUBECONFIG:-}"
+test -s /var/run/secrets/kubernetes.io/serviceaccount/token
+kubectl auth can-i patch deployments -n "$K8S_NAMESPACE" | grep '^yes$'
+kubectl -n "$K8S_NAMESPACE" apply --dry-run=server -f evidence/runtime.json
+kubectl -n "$K8S_NAMESPACE" apply -f evidence/runtime.json
+kubectl -n "$K8S_NAMESPACE" rollout status "deployment/$DEPLOYMENT_NAME" --timeout=240s
+kubectl -n "$K8S_NAMESPACE" get deployment "$DEPLOYMENT_NAME" -o json > evidence/deployment.json
+kubectl -n "$K8S_NAMESPACE" get pods -l "app=$DEPLOYMENT_NAME" -o json > evidence/pods.json
+kubectl -n "$K8S_NAMESPACE" get service "$DEPLOYMENT_NAME" -o json > evidence/service.json
+'''
+      }
+    }
+  }
+  post {
+    always { archiveArtifacts artifacts: 'evidence/**', allowEmptyArchive: true; deleteDir() }
+    success { echo 'sk026 Kubernetes controller Buildah CI/CD succeeded.' }
+  }
+}
