@@ -82,7 +82,7 @@ spec:
           value: prod
         - name: JAVA_OPTS
           value: -Xms64m -Xmx256m
-        image: skala-registry.skala-us.com/class-1/sk026-webserver:p175-docker-4-1d18881
+        image: skala-registry.skala-us.com/class-1/sk026-webserver:p175-docker-5-144b91d
         imagePullPolicy: Always
         livenessProbe:
           httpGet:
@@ -120,3 +120,29 @@ spec:
       - configMap:
           name: sk026-backend-configmap
         name: config
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  labels:
+    lab: sk026-pages-175-230
+    owner: sk026
+  name: sk026-myfirst-ingress
+  namespace: class-1
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: sk026-myfirst-ingress.class-1.skala-us.com
+    http:
+      paths:
+      - backend:
+          service:
+            name: sk026-myfirst-api-server
+            port:
+              number: 8080
+        path: /
+        pathType: Prefix
+  tls:
+  - hosts:
+    - sk026-myfirst-ingress.class-1.skala-us.com
+    secretName: wildcard-class-1-skala-us-com-tls

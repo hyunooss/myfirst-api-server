@@ -1,0 +1,28 @@
+apiVersion: "networking.k8s.io/v1"
+kind: "Ingress"
+metadata:
+  name: "sk026-myfirst-ingress"
+  namespace: "class-1"
+  labels:
+    owner: "sk026"
+    lab: "sk026-pages-175-230"
+spec:
+  ingressClassName: "nginx"
+  rules:
+    -
+      host: "sk026-myfirst-ingress.class-1.skala-us.com"
+      http:
+        paths:
+          -
+            path: "/"
+            pathType: "Prefix"
+            backend:
+              service:
+                name: "sk026-myfirst-api-server"
+                port:
+                  number: 8080
+  tls:
+    -
+      hosts:
+        - "sk026-myfirst-ingress.class-1.skala-us.com"
+      secretName: "wildcard-class-1-skala-us-com-tls"
