@@ -12,4 +12,4 @@ labels:
 images:
 - name: skala-registry.skala-us.com/class-1/sk026-webserver
   newName: skala-registry.skala-us.com/class-1/sk026-webserver
-  newTag: p175-buildah-1-7c69594
+  newTag: p175-buildah-2-7c69594

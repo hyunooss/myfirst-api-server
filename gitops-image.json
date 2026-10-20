@@ -1,10 +1,10 @@
 {
   "student": "sk026",
   "namespace": "class-1",
-  "image": "skala-registry.skala-us.com/class-1/sk026-webserver:p175-buildah-1-7c69594",
-  "digest": "sha256:870344a52fcff96af46d1483f706f389cb6f707d418fc076c9fb793e8567bc97",
+  "image": "skala-registry.skala-us.com/class-1/sk026-webserver:p175-buildah-2-7c69594",
+  "digest": "sha256:cf5cd4ceb0a28fed558552b39a4c0c5b139b4c0a7b5efaf0673d4b3f6bc5fbe3",
   "source_revision": "7c6959445ec76df7758fd0a1351aea0e5a138da1",
   "tool": "buildah",
   "job": "myfirst-api-server-buildah-ci",
-  "build_number": "1"
+  "build_number": "2"
 }
