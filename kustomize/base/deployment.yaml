@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sk026-myfirst-api-server
+  namespace: class-1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sk026-myfirst-api-server
+  template:
+    metadata:
+      labels:
+        app: sk026-myfirst-api-server
+    spec:
+      imagePullSecrets:
+      - name: sk026-gitops-registry
+      containers:
+      - name: myfirst-api-server
+        image: skala-registry.skala-us.com/class-1/sk026-webserver:p174-buildah-4
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+        env:
+        - name: SPRING_PROFILES_ACTIVE
+          value: prod
+        - name: JAVA_OPTS
+          value: '-Xms64m -Xmx256m'
+        resources:
+          requests:
+            cpu: 100m
+            memory: 384Mi
+          limits:
+            cpu: '1'
+            memory: 768Mi
+        startupProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: 8080
+          periodSeconds: 3
+          failureThreshold: 60
+        readinessProbe:
+          httpGet:
+            path: /actuator/health/readiness
+            port: 8080
+          periodSeconds: 3
+        livenessProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: 8080
+          periodSeconds: 10
+        volumeMounts:
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+      volumes:
+      - name: config
+        configMap:
+          name: sk026-backend-configmap

@@ -1,0 +1,135 @@
+pipeline {
+  agent any
+  options {
+    disableConcurrentBuilds()
+    timestamps()
+    skipDefaultCheckout(true)
+    timeout(time: 35, unit: 'MINUTES')
+    buildDiscarder(logRotator(numToKeepStr: '10'))
+  }
+  environment {
+    GIT_URL = 'https://github.com/hyunooss/myfirst-api-server.git'
+    GIT_BRANCH = 'main'
+    GIT_ID = 'sk026-github-id'
+    APP_DIR = '01.spring-backend-v1.0'
+    IMAGE_NAME = 'sk026-webserver'
+    IMAGE_TAG = 'p175-buildkit'
+    CI_TOOL = 'buildkit'
+    GITOPS_BRANCH = 'gitops'
+    IMAGE_REGISTRY_URL = 'skala-registry.skala-us.com'
+    IMAGE_REGISTRY_PROJECT = 'class-1'
+    DOCKER_CREDENTIAL_ID = 'sk026-image-registry-id'
+    K8S_NAMESPACE = 'class-1'
+  }
+  stages {
+    stage('Clone Repository') {
+      steps {
+        git branch: env.GIT_BRANCH, url: env.GIT_URL, credentialsId: env.GIT_ID
+        script {
+          env.SOURCE_REV = sh(script: 'git rev-parse HEAD', returnStdout: true).trim()
+          env.FINAL_IMAGE_TAG = "${env.IMAGE_TAG}-${env.BUILD_NUMBER}-${env.SOURCE_REV.substring(0,7)}"
+        }
+        sh '''#!/bin/bash
+set -euo pipefail
+mkdir -p evidence
+printf '%s\n' "$SOURCE_REV" > evidence/source-revision.txt
+printf '%s/%s/%s:%s\n' "$IMAGE_REGISTRY_URL" "$IMAGE_REGISTRY_PROJECT" "$IMAGE_NAME" "$FINAL_IMAGE_TAG" > evidence/image-ref.txt
+'''
+      }
+    }
+    stage('Build with Maven') {
+      steps {
+        writeFile file: 'maven-settings.xml', text: '<settings><mirrors><mirror><id>google-central</id><url>https://maven-central.storage-download.googleapis.com/maven2</url><mirrorOf>central</mirrorOf></mirror></mirrors></settings>'
+        dir(env.APP_DIR) { sh 'mvn -B -ntp -s ../maven-settings.xml clean package -DskipTests' }
+        sh '''#!/bin/bash
+set -euo pipefail
+mkdir -p image-context/target
+cp "$APP_DIR/target/myapp-0.0.1-SNAPSHOT.jar" image-context/target/
+sed 's|^FROM eclipse-temurin:|FROM docker.io/library/eclipse-temurin:|' "$APP_DIR/Dockerfile" > image-context/Dockerfile
+sha256sum image-context/target/*.jar > evidence/jar-sha256.txt
+'''
+      }
+    }
+    stage('Compute Image Meta') {
+      steps {
+        echo "Image tag: ${env.FINAL_IMAGE_TAG}; source: ${env.SOURCE_REV}"
+        sh '''#!/bin/bash
+set -euo pipefail
+printf '\nLABEL org.opencontainers.image.revision="%s" skala.student="sk026"\n' "$SOURCE_REV" >> image-context/Dockerfile
+'''
+      }
+    }
+    stage('Image Build & Push (BuildKit)') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: env.DOCKER_CREDENTIAL_ID,
+          usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
+          sh '''#!/bin/bash
+set +x
+set -euo pipefail
+IMAGE_REF="${IMAGE_REGISTRY_URL}/${IMAGE_REGISTRY_PROJECT}/${IMAGE_NAME}:${FINAL_IMAGE_TAG}"
+REG_AUTH_DIR="$(mktemp -d /tmp/sk026-registry.XXXXXX)"
+BUILDKIT_STATE="$(mktemp -d /tmp/sk026-buildkit.XXXXXX)"
+trap 'rm -rf -- "$REG_AUTH_DIR" "$BUILDKIT_STATE"' EXIT
+export DOCKER_CONFIG="$REG_AUTH_DIR"
+python3 -c 'import base64,json,os,pathlib;e=os.environ;a=base64.b64encode((e["REG_USER"]+":"+e["REG_PASS"]).encode()).decode();p=pathlib.Path(e["DOCKER_CONFIG"])/"config.json";p.write_text(json.dumps({"auths":{e["IMAGE_REGISTRY_URL"]:{"auth":a}}}));p.chmod(0o600)'
+export BUILDKITD_FLAGS="--root=$BUILDKIT_STATE/state --oci-worker-snapshotter=native"
+buildctl-daemonless.sh build --frontend dockerfile.v0 \
+  --local context="$WORKSPACE/image-context" --local dockerfile="$WORKSPACE/image-context" \
+  --opt platform=linux/amd64 --output "type=image,name=$IMAGE_REF,push=true,oci-mediatypes=true" \
+  --metadata-file "$WORKSPACE/evidence/image-build-metadata.json"
+jq -r '."containerimage.digest"' evidence/image-build-metadata.json > evidence/image-digest.txt
+test "$(cat evidence/image-digest.txt)" != null
+'''
+        }
+      }
+    }
+    stage('GitOps Update') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: env.GIT_ID,
+          usernameVariable: 'GIT_USER', passwordVariable: 'GIT_PASS')]) {
+          sh '''#!/bin/bash
+set +x
+set -euo pipefail
+GITOPS_STATE="$(mktemp -d /tmp/sk026-gitops.XXXXXX)"
+trap 'git worktree remove --force "$GITOPS_STATE/tree" >/dev/null 2>&1 || true; rm -rf -- "$GITOPS_STATE"' EXIT
+cat > "$GITOPS_STATE/askpass" <<'ASKPASS'
+#!/bin/sh
+case "$1" in
+  *Username*) printf '%s\n' "$GIT_USER" ;;
+  *) printf '%s\n' "$GIT_PASS" ;;
+esac
+ASKPASS
+chmod 700 "$GITOPS_STATE/askpass"
+export GIT_ASKPASS="$GITOPS_STATE/askpass" GIT_TERMINAL_PROMPT=0
+git config credential.helper ''
+if git ls-remote --exit-code --heads origin refs/heads/gitops >/dev/null; then
+  git fetch origin refs/heads/gitops:refs/remotes/origin/gitops
+  GITOPS_BASE=origin/gitops
+else
+  GITOPS_BASE="$SOURCE_REV"
+fi
+git worktree add --detach "$GITOPS_STATE/tree" "$GITOPS_BASE"
+rm -rf -- "$GITOPS_STATE/tree/kustomize"
+cp -R "$WORKSPACE/kustomize" "$GITOPS_STATE/tree/kustomize"
+IMAGE_BASE="${IMAGE_REGISTRY_URL}/${IMAGE_REGISTRY_PROJECT}/${IMAGE_NAME}"
+(cd "$GITOPS_STATE/tree/kustomize/overlays/dev" && kustomize edit set image "${IMAGE_BASE}=${IMAGE_BASE}:${FINAL_IMAGE_TAG}")
+mkdir -p "$GITOPS_STATE/tree/k8s"
+kubectl kustomize "$GITOPS_STATE/tree/kustomize/overlays/dev" > "$GITOPS_STATE/tree/k8s/rendered.yaml"
+cp "$GITOPS_STATE/tree/k8s/rendered.yaml" "$WORKSPACE/evidence/gitops-rendered.yaml"
+export IMAGE_DIGEST="$(cat "$WORKSPACE/evidence/image-digest.txt")"
+python3 -c 'import json,os;e=os.environ; print(json.dumps({"student":"sk026","namespace":"class-1","image":e["IMAGE_REGISTRY_URL"]+"/"+e["IMAGE_REGISTRY_PROJECT"]+"/"+e["IMAGE_NAME"]+":"+e["FINAL_IMAGE_TAG"],"digest":e["IMAGE_DIGEST"],"source_revision":e["SOURCE_REV"],"tool":e["CI_TOOL"],"job":e["JOB_NAME"],"build_number":e["BUILD_NUMBER"]},indent=2))' > "$GITOPS_STATE/tree/gitops-image.json"
+cp "$GITOPS_STATE/tree/gitops-image.json" "$WORKSPACE/evidence/gitops-image.json"
+git -C "$GITOPS_STATE/tree" add -- kustomize k8s gitops-image.json
+git -C "$GITOPS_STATE/tree" -c user.name=sk026-gitops -c user.email=sk026@users.noreply.github.com commit -m "[sk026 CI] ${CI_TOOL}: ${FINAL_IMAGE_TAG}"
+git -C "$GITOPS_STATE/tree" push origin HEAD:refs/heads/gitops
+git -C "$GITOPS_STATE/tree" rev-parse HEAD > "$WORKSPACE/evidence/gitops-commit.txt"
+'''
+        }
+      }
+    }
+  }
+  post {
+    always { archiveArtifacts artifacts: 'evidence/**', allowEmptyArchive: true; deleteDir() }
+    success { echo 'sk026 CI image and GitOps branch update succeeded.' }
+  }
+}
