@@ -1,0 +1,164 @@
+pipeline {
+  agent any
+  options {
+    disableConcurrentBuilds()
+    timestamps()
+    skipDefaultCheckout(true)
+    timeout(time: 35, unit: 'MINUTES')
+    buildDiscarder(logRotator(numToKeepStr: '10'))
+  }
+  environment {
+    GIT_URL = 'https://github.com/hyunooss/myfirst-api-server.git'
+    GIT_BRANCH = 'main'
+    GIT_ID = 'sk026-github-id'
+    APP_DIR = '01.spring-backend-v1.0'
+    IMAGE_NAME = 'sk026-webserver'
+    IMAGE_TAG = 'p149-docker'
+    IMAGE_REGISTRY_URL = 'skala-registry.skala-us.com'
+    IMAGE_REGISTRY_PROJECT = 'class-1'
+    DOCKER_CREDENTIAL_ID = 'sk026-image-registry-id'
+    K8S_CONTEXT = 'skala-admin-sa@class-1'
+    K8S_NAMESPACE = 'class-1'
+    DEPLOYMENT_NAME = 'sk026-myfirst-api-server'
+  }
+  stages {
+    stage('Clone Repository') {
+      steps {
+        git branch: env.GIT_BRANCH, url: env.GIT_URL, credentialsId: env.GIT_ID
+        script {
+          env.SOURCE_REV = sh(script: 'git rev-parse HEAD', returnStdout: true).trim()
+          env.FINAL_IMAGE_TAG = "${env.IMAGE_TAG}-${env.BUILD_NUMBER}"
+        }
+        sh '''#!/bin/bash
+set -euo pipefail
+mkdir -p evidence
+printf '%s\n' "$SOURCE_REV" > evidence/source-revision.txt
+printf '%s/%s/%s:%s\n' "$IMAGE_REGISTRY_URL" "$IMAGE_REGISTRY_PROJECT" "$IMAGE_NAME" "$FINAL_IMAGE_TAG" > evidence/image-ref.txt
+'''
+      }
+    }
+    stage('Build with Maven') {
+      steps {
+        writeFile file: 'maven-settings.xml', text: '<settings><mirrors><mirror><id>google-central</id><url>https://maven-central.storage-download.googleapis.com/maven2</url><mirrorOf>central</mirrorOf></mirror></mirrors></settings>'
+        dir(env.APP_DIR) { sh 'mvn -B -ntp -s ../maven-settings.xml clean package -DskipTests' }
+        sh '''#!/bin/bash
+set -euo pipefail
+mkdir -p image-context/target
+cp "$APP_DIR/target/myapp-0.0.1-SNAPSHOT.jar" image-context/target/
+sed 's|^FROM eclipse-temurin:|FROM docker.io/library/eclipse-temurin:|' "$APP_DIR/Dockerfile" > image-context/Dockerfile
+sha256sum image-context/target/*.jar > evidence/jar-sha256.txt
+'''
+      }
+    }
+    stage('Image Build & Push (BuildKit)') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: env.DOCKER_CREDENTIAL_ID,
+          usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
+          sh '''#!/bin/bash
+set +x
+set -euo pipefail
+IMAGE_REF="${IMAGE_REGISTRY_URL}/${IMAGE_REGISTRY_PROJECT}/${IMAGE_NAME}:${FINAL_IMAGE_TAG}"
+REG_AUTH_DIR="$(mktemp -d /tmp/sk026-registry.XXXXXX)"
+trap 'rm -rf -- "$REG_AUTH_DIR"' EXIT
+export DOCKER_CONFIG="$REG_AUTH_DIR"
+printf '%s' "$REG_PASS" | docker login --username "$REG_USER" --password-stdin "$IMAGE_REGISTRY_URL"
+docker buildx build --platform linux/amd64 --provenance=false --sbom=false \
+  --label "org.opencontainers.image.source=$GIT_URL" --label "org.opencontainers.image.revision=$SOURCE_REV" \
+  --label skala.student=sk026 --metadata-file "$WORKSPACE/evidence/image-build-metadata.json" \
+  --tag "$IMAGE_REF" --push "$WORKSPACE/image-context"
+jq -r '."containerimage.digest"' evidence/image-build-metadata.json > evidence/image-digest.txt
+test "$(cat evidence/image-digest.txt)" != null
+'''
+        }
+      }
+    }
+    stage('Update K8s Manifests') {
+      steps {
+        dir("${env.APP_DIR}/kustomize/overlays/jenkins") {
+          writeFile file: 'kustomization.yaml', text: '''apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: class-1
+resources:
+- ../dev
+patches:
+- path: runtime-patch.yaml
+  target:
+    kind: Deployment
+    name: sk026-myfirst-api-server
+labels:
+- pairs:
+    lab: sk026-pages-149-174
+    owner: sk026
+  includeSelectors: false
+  includeTemplates: true
+'''
+          writeFile file: 'runtime-patch.yaml', text: '''apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sk026-myfirst-api-server
+  namespace: class-1
+spec:
+  replicas: 1
+  template:
+    spec:
+      imagePullSecrets:
+      - name: sk026-p149-registry
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      containers:
+      - name: myfirst-api-server
+        resources:
+          requests:
+            cpu: 100m
+            memory: 384Mi
+          limits:
+            cpu: '1'
+            memory: 768Mi
+        env:
+        - name: JAVA_OPTS
+          value: '-Xms64m -Xmx256m'
+        - name: DEVELOPER_OWNER_NAME
+          value: sk026
+        startupProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: 8080
+          periodSeconds: 3
+          failureThreshold: 60
+'''
+          sh '''#!/bin/bash
+set -euo pipefail
+IMAGE_BASE="${IMAGE_REGISTRY_URL}/${IMAGE_REGISTRY_PROJECT}/${IMAGE_NAME}"
+kustomize edit set image "${IMAGE_BASE}=${IMAGE_BASE}:${FINAL_IMAGE_TAG}"
+kustomize build . > "$WORKSPACE/evidence/rendered.yaml"
+'''
+        }
+      }
+    }
+    stage('Deploy to Kubernetes') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: env.DOCKER_CREDENTIAL_ID,
+          usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
+          sh '''#!/bin/bash
+set +x
+set -euo pipefail
+python3 -c 'import base64,json,os; e=os.environ; a=base64.b64encode((e["REG_USER"]+":"+e["REG_PASS"]).encode()).decode(); c={"auths":{e["IMAGE_REGISTRY_URL"]:{"auth":a}}}; print(json.dumps({"apiVersion":"v1","kind":"Secret","metadata":{"name":"sk026-p149-registry","namespace":e["K8S_NAMESPACE"],"labels":{"lab":"sk026-pages-149-174","owner":"sk026"}},"type":"kubernetes.io/dockerconfigjson","data":{".dockerconfigjson":base64.b64encode(json.dumps(c).encode()).decode()}}))' | kubectl --context "$K8S_CONTEXT" -n "$K8S_NAMESPACE" apply -f -
+kubectl --context "$K8S_CONTEXT" -n "$K8S_NAMESPACE" apply --dry-run=server -f evidence/rendered.yaml
+kubectl --context "$K8S_CONTEXT" -n "$K8S_NAMESPACE" apply -f evidence/rendered.yaml
+kubectl --context "$K8S_CONTEXT" -n "$K8S_NAMESPACE" rollout status "deployment/$DEPLOYMENT_NAME" --timeout=240s
+kubectl --context "$K8S_CONTEXT" -n "$K8S_NAMESPACE" get deployment "$DEPLOYMENT_NAME" -o json > evidence/deployment.json
+kubectl --context "$K8S_CONTEXT" -n "$K8S_NAMESPACE" get pods -l "app=$DEPLOYMENT_NAME" -o json > evidence/pods.json
+kubectl --context "$K8S_CONTEXT" -n "$K8S_NAMESPACE" get service "$DEPLOYMENT_NAME" -o json > evidence/service.json
+'''
+        }
+      }
+    }
+  }
+  post {
+    always {
+      archiveArtifacts artifacts: 'evidence/**', allowEmptyArchive: true
+      deleteDir()
+    }
+    success { echo 'sk026 Spring Boot build, registry push and Kubernetes deployment succeeded.' }
+  }
+}
