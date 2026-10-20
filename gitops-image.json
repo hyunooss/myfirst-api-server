@@ -1,10 +1,10 @@
 {
   "student": "sk026",
   "namespace": "class-1",
-  "image": "skala-registry.skala-us.com/class-1/sk026-webserver:p175-buildah-2-7c69594",
-  "digest": "sha256:cf5cd4ceb0a28fed558552b39a4c0c5b139b4c0a7b5efaf0673d4b3f6bc5fbe3",
-  "source_revision": "7c6959445ec76df7758fd0a1351aea0e5a138da1",
-  "tool": "buildah",
-  "job": "myfirst-api-server-buildah-ci",
-  "build_number": "2"
+  "image": "skala-registry.skala-us.com/class-1/sk026-webserver:p175-docker-3-1d18881",
+  "digest": "sha256:e812baf8c9d760092ccf24d403c547e27175fb38964fbeab257b724c5acfb390",
+  "source_revision": "1d18881e87462cdc4b5194e622b2893c850e4d13",
+  "tool": "docker",
+  "job": "myfirst-api-server-docker-ci",
+  "build_number": "3"
 }
