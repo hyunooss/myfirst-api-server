@@ -6,11 +6,11 @@ resources:
 - configmap.yaml
 - ingress.yaml
 labels:
-- pairs:
-    owner: sk026
+- includeTemplates: true
+  pairs:
     lab: sk026-pages-175-230
-  includeSelectors: false
-  includeTemplates: true
+    owner: sk026
 images:
 - name: skala-registry.skala-us.com/class-1/sk026-webserver
-  newTag: p174-buildah-4
+  newName: skala-registry.skala-us.com/class-1/sk026-webserver
+  newTag: p239-k8s-buildkit-1-c24991f
